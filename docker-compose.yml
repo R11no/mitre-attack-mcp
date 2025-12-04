@@ -1,0 +1,12 @@
+services:
+  mitre-attack-mcp:
+    build: .
+    image: mitre-attack-mcp:latest
+    volumes:
+      # データを永続化
+      - mitre-data:/data/mitre-attack-data
+    stdin_open: true
+    tty: true
+
+volumes:
+  mitre-data:
