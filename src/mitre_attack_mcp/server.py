@@ -20,6 +20,9 @@ mcp = FastMCP("mitre-attack")
 # Dictionary to store MitreAttackData objects for each domain
 attack_data_sources: Dict[str, MitreAttackData] = {}
 
+# Global variable to store data directory path
+DATA_DIR = None
+
 
 def download_stix_data(data_path):
     """Download STIX data for all domains.
@@ -1244,7 +1247,7 @@ async def generate_layer(attack_id: str, score: int, domain: str = "enterprise")
     """Generate an ATT&CK navigator layer in JSON format based on a matching ATT&CK ID value
 
     Args:
-        attack_id: ATT&CK ID to generate ATT&CK navigator layer for. Valid match values are single ATT&CK ID's for group (GXXX), mitigation (MXXX), software (SXXX), and data component objects (DXXX) within the selected ATT&CK data. NEVER directly input a technique (TXXX). If an invalid match happens, or if multiple ATT&CK ID's are provided, present the user with an error message.
+        attack_id: ATT&CK ID to generate ATT&CK navigator layer for. Valid match values are single ATT&CK ID's for technique (TXXX), group (GXXX), mitigation (MXXX), software (SXXX), and data component objects (DXXX) within the selected ATT&CK data. If an invalid match happens, or if multiple ATT&CK ID's are provided, present the user with an error message.
         score: Score to assign to each technique in the layer
         domain: Domain name ('enterprise', 'mobile', or 'ics')
     """
@@ -1264,27 +1267,60 @@ async def generate_layer(attack_id: str, score: int, domain: str = "enterprise")
         if not isinstance(score, int):
             raise ValueError("score must be an integer")
 
-        # Validate match format
-        if not re.match(r"^[GMSD]\d+$", attack_id):
+        # Validate match format - now including TXXX for techniques
+        if not re.match(r"^[TGMSD]\d+(\.\d+)?$", attack_id):
             raise ValueError(
-                "match must be a valid ATT&CK ID format (GXXX, MXXX, SXXX, or DXXX)"
+                "match must be a valid ATT&CK ID format (TXXX, TXXX.XXX, GXXX, MXXX, SXXX, or DXXX)"
             )
 
-        # Use the data path from arguments
-        data_path = args.data_path
+        # Use the global data path set in main()
+        if not DATA_DIR:
+            raise RuntimeError("DATA_DIR is not initialized. Server not started correctly.")
 
         # Domain key is used in the filename format
         domain_key = f"{domain}-attack"
         stix_path = os.path.join(
-            data_path, "v" + release_info.LATEST_VERSION, f"{domain_key}.json"
+            DATA_DIR, "v" + release_info.LATEST_VERSION, f"{domain_key}.json"
         )
 
         # Make sure the STIX file exists
         if not os.path.exists(stix_path):
             raise FileNotFoundError(
-                f"STIX data file '{domain_key}.json' not found in data path '{data_path}'. Please ensure the data has been downloaded."
+                f"STIX data file '{domain_key}.json' not found in data path '{DATA_DIR}'. Please ensure the data has been downloaded."
             )
 
+        # For technique IDs, create a simple layer with just that technique
+        if attack_id.startswith('T'):
+            attack_data = get_attack_data(domain)
+            
+            # Get the technique object to validate it exists
+            try:
+                technique = attack_data.get_object_by_attack_id(attack_id, "attack-pattern")
+            except Exception:
+                return f"Technique '{attack_id}' not found in the '{domain}' domain."
+            
+            # Create a basic layer structure
+            layer_dict = {
+                "name": f"Technique {attack_id}",
+                "versions": {
+                    "attack": release_info.LATEST_VERSION,
+                    "navigator": "5.1.0",
+                    "layer": "4.5"
+                },
+                "domain": domain_key,
+                "description": f"Layer for technique {attack_id}",
+                "techniques": [
+                    {
+                        "techniqueID": attack_id,
+                        "score": score,
+                        "enabled": True
+                    }
+                ]
+            }
+            
+            return json.dumps(layer_dict)
+        
+        # For non-technique IDs, use UsageLayerGenerator as before
         handle = UsageLayerGenerator(source="local", domain=domain, resource=stix_path)
         layer = handle.generate_layer(match=attack_id)
 
@@ -1415,6 +1451,8 @@ def get_default_data_dir():
 
 
 def main():
+    global DATA_DIR
+    
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--data-dir",
@@ -1424,6 +1462,9 @@ def main():
     )
 
     args = parser.parse_args()
+    
+    # Set the global DATA_DIR
+    DATA_DIR = args.data_dir
 
     # Check if data files exist in the specified path
     data_exists = all(
@@ -1447,4 +1488,9 @@ def main():
     if not loaded_domains:
         exit(1)
 
+    # Run the MCP server
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
